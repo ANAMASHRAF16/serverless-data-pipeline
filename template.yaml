@@ -1,0 +1,52 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Serverless Order Processing Pipeline - Baseline
+
+Resources:
+  OrderQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: order-processing-queue
+      VisibilityTimeout: 60
+
+  ResultsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: order-results
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: order_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: order_id
+          KeyType: HASH
+
+  ProcessorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: order-processor
+      Handler: handler.lambda_handler
+      CodeUri: src/
+      Runtime: python3.11
+      Timeout: 30
+      MemorySize: 256
+      Environment:
+        Variables:
+          RESULTS_TABLE: !Ref ResultsTable
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ResultsTable
+        - SQSPollerPolicy:
+            QueueName: !GetAtt OrderQueue.QueueName
+      Events:
+        SQSEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt OrderQueue.Arn
+            BatchSize: 1
+
+Outputs:
+  QueueUrl:
+    Value: !Ref OrderQueue
+  TableName:
+    Value: !Ref ResultsTable
