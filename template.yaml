@@ -1,13 +1,25 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: Serverless Order Processing Pipeline - Baseline
+Description: Serverless Order Processing Pipeline - Fixed
 
 Resources:
+
+  # Dead-letter queue for failed messages
+  OrderDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: order-processing-dlq
+      MessageRetentionPeriod: 1209600  # 14 days
+
+  # Main queue with DLQ redrive policy
   OrderQueue:
     Type: AWS::SQS::Queue
     Properties:
       QueueName: order-processing-queue
-      VisibilityTimeout: 60
+      VisibilityTimeout: 120
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt OrderDLQ.Arn
+        maxReceiveCount: 3  # Send to DLQ after 3 failed attempts
 
   ResultsTable:
     Type: AWS::DynamoDB::Table
@@ -28,8 +40,9 @@ Resources:
       Handler: handler.lambda_handler
       CodeUri: src/
       Runtime: python3.11
-      Timeout: 30
-      MemorySize: 256
+      Timeout: 60
+      MemorySize: 512
+      ReservedConcurrentExecutions: 5  # Prevent uncontrolled fan-out
       Environment:
         Variables:
           RESULTS_TABLE: !Ref ResultsTable
@@ -43,10 +56,31 @@ Resources:
           Type: SQS
           Properties:
             Queue: !GetAtt OrderQueue.Arn
-            BatchSize: 1
+            BatchSize: 10  # Process 10 records per invocation
+            FunctionResponseTypes:
+              - ReportBatchItemFailures  # Only retry failed records
+
+  # CloudWatch alarm for DLQ messages
+  DLQAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: order-dlq-not-empty
+      AlarmDescription: Messages landing in the dead-letter queue
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt OrderDLQ.QueueName
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
 
 Outputs:
   QueueUrl:
     Value: !Ref OrderQueue
+  DLQUrl:
+    Value: !Ref OrderDLQ
   TableName:
     Value: !Ref ResultsTable
